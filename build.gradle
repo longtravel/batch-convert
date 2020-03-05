@@ -1,0 +1,42 @@
+plugins {
+	id 'org.springframework.boot' version '2.2.2.RELEASE'
+	id 'io.spring.dependency-management' version '1.0.8.RELEASE'
+	id 'java'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+sourceCompatibility = '1.8'
+
+project.ext {
+	isRelease = System.getProperty("Release") == "true"
+	// Publishing configuration
+	snapshotMavenRepo = "http://pr.dev.cwds.io/artifactory/repo"
+	releaseMavenRepo = "http://pr.dev.cwds.io/artifactory/libs-release"
+	artifactoryRepo = (isRelease ? releaseMavenRepo : snapshotMavenRepo)
+}
+
+repositories {
+	mavenLocal()
+	maven {
+		url artifactoryRepo
+	}
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-batch'
+	runtimeOnly 'org.hsqldb:hsqldb'
+	testImplementation('org.springframework.boot:spring-boot-starter-test') {
+		exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+	}
+	testImplementation 'org.springframework.batch:spring-batch-test'
+	compile group: "gov.ca.cwds.api.libs", name: "db2jcc", version: "4"
+	compile group: "gov.ca.cwds.api.libs", name: "db2jcc_license_cisuz", version: "1"
+	// https://mvnrepository.com/artifact/org.postgresql/postgresql
+	compile group: 'org.postgresql', name: 'postgresql', version: '42.1.4'
+
+}
+
+test {
+	useJUnitPlatform()
+}
