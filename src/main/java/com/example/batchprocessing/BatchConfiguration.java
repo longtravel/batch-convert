@@ -1,40 +1,36 @@
 package com.example.batchprocessing;
 
 import java.sql.SQLException;
+import java.util.HashMap;
+import java.util.Map;
 import javax.sql.DataSource;
 
 import org.springframework.batch.core.Job;
-import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
-import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.batch.core.repository.support.JobRepositoryFactoryBean;
-import org.springframework.batch.core.repository.support.MapJobRepositoryFactoryBean;
 import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
 import org.springframework.batch.item.database.JdbcBatchItemWriter;
 import org.springframework.batch.item.database.JdbcCursorItemReader;
+import org.springframework.batch.item.database.JdbcPagingItemReader;
+import org.springframework.batch.item.database.Order;
 import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
 import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuilder;
-import org.springframework.batch.item.file.FlatFileItemReader;
-import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
-import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
-import org.springframework.batch.item.file.mapping.DefaultLineMapper;
-import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+
+import org.springframework.batch.item.database.support.PostgresPagingQueryProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.SimpleDriverDataSource;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionManager;
 
-// tag::setup[]
+
 @Configuration
 @EnableBatchProcessing
 public class BatchConfiguration {
@@ -48,10 +44,18 @@ public class BatchConfiguration {
 	@Autowired
 	public DataSource dataSource;
 
-
   @Autowired
 	public PlatformTransactionManager transactionManager;
-	// end::setup[]
+
+	@Bean
+	public ColumnRangePartitioner partitioner()
+	{
+		ColumnRangePartitioner columnRangePartitioner = new ColumnRangePartitioner();
+		columnRangePartitioner.setColumn("doc_id");
+		columnRangePartitioner.setDataSource(dataSource);
+		columnRangePartitioner.setTable("legacydocument");
+		return columnRangePartitioner;
+	}
 
 	@Bean
 	@Primary
@@ -81,7 +85,7 @@ public class BatchConfiguration {
 		return new JdbcCursorItemReaderBuilder<LegacyDocument>()
 				.dataSource(legacyDataSource())
 				.name("legacyDocumentItemReader")
-				.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT FETCH FIRST 100 ROWS ONLY") //for testing
+				.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT FETCH FIRST 500 ROWS ONLY") //for testing
 				//.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT")
 				.rowMapper(new LegacyDocumentRowMapper())
 				.build();
@@ -101,16 +105,13 @@ public class BatchConfiguration {
 			.dataSource(dataSource)
 			.build();
 	}
-	// end::readerwriterprocessor[]
 
-	// tag::jobstep[]
 	@Bean
 	public Job importUserJob(JobCompletionNotificationListener listener, Step step1) {
 		return jobBuilderFactory.get("importUserJob")
 			.incrementer(new RunIdIncrementer())
 			.listener(listener)
-			.flow(step1)
-			.end()
+			.start(step1(writer(dataSource))).next(step2())
 			.build();
 	}
 
@@ -125,28 +126,71 @@ public class BatchConfiguration {
 			.writer(writer)
 			.build();
 	}
-	// end::jobstep[]
-}
 
-
-
-	/*
 	@Bean
-	protected JobRepository createJobRepository() throws Exception {
-		JobRepositoryFactoryBean factory = new JobRepositoryFactoryBean();
-		factory.setDataSource(dataSource);
-		factory.setTransactionManager(transactionManager);
-		factory.setIsolationLevelForCreate("ISOLATION_SERIALIZABLE");
-		factory.setDatabaseType("H2");
-		factory.setTablePrefix("BATCH_");
-		factory.setMaxVarCharLength(1000);
-		return factory.getObject();
+	@StepScope
+	public JdbcPagingItemReader<Document> pagingItemReader(
+			@Value("#{stepExecutionContext['minValue']}") Long minValue,
+			@Value("#{stepExecutionContext['maxValue']}") Long maxValue)
+	{
+		System.out.println("reading " + minValue + " to " + maxValue);
+
+		Map<String, Order> sortKeys = new HashMap<>();
+		sortKeys.put("doc_id", Order.ASCENDING);
+
+		PostgresPagingQueryProvider queryProvider = new PostgresPagingQueryProvider();
+		queryProvider.setSelectClause("doc_id, doclocator");
+		queryProvider.setFromClause("from legacydocument");
+		queryProvider.setWhereClause("where doc_id >= " + minValue + " and doc_id < " + maxValue);
+		queryProvider.setSortKeys(sortKeys);
+
+		JdbcPagingItemReader<Document> reader = new JdbcPagingItemReader<>();
+		reader.setDataSource(this.dataSource);
+		//TODO: put this in the application.props file via enviroment setting
+		reader.setFetchSize(100);
+		reader.setRowMapper(new DocumentRowMapper());
+		reader.setQueryProvider(queryProvider);
+
+		return reader;
 	}
-*/
-// This would reside in your BatchConfigurer implementation
-/*	@Bean
-	protected JobRepository createJobRepository() throws Exception {
-		MapJobRepositoryFactoryBean factory = new MapJobRepositoryFactoryBean();
-		factory.setTransactionManager(transactionManager);
-		return factory.getObject();
-	}*/
+
+  // Write into a NEW table (new object) in Postgres with just the results of the REST post
+	// First, just write to a table. Then add the RESTful calls
+	@Bean
+	@StepScope
+	public JdbcBatchItemWriter<Document> resultItemWriter()
+	{
+		JdbcBatchItemWriter<Document> itemWriter = new JdbcBatchItemWriter<>();
+		itemWriter.setDataSource(dataSource);
+		itemWriter.setSql("INSERT INTO result (res, note) VALUES (1 , :docLocator)");
+
+		itemWriter.setItemSqlParameterSourceProvider
+				(new BeanPropertyItemSqlParameterSourceProvider<>());
+		itemWriter.afterPropertiesSet();
+
+		return itemWriter;
+	}
+
+	// Master
+	@Bean
+	public Step step2()
+	{
+		return stepBuilderFactory.get("step2")
+				.partitioner(slaveStep().getName(), partitioner())
+				.step(slaveStep())
+				.gridSize(4)
+				.taskExecutor(new SimpleAsyncTaskExecutor())
+				.build();
+	}
+
+	// slave step
+	@Bean
+	public Step slaveStep()
+	{
+		return stepBuilderFactory.get("slaveStep")
+				.<Document, Document>chunk(100)
+				.reader(pagingItemReader(null, null))
+				.writer(resultItemWriter())
+				.build();
+	}
+}
