@@ -1,10 +1,22 @@
 package com.example.batchprocessing;
 
+import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import javax.sql.DataSource;
 
+import org.apache.http.NameValuePair;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.message.BasicNameValuePair;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
@@ -27,9 +39,9 @@ import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
-
 
 @Configuration
 @EnableBatchProcessing
@@ -47,6 +59,24 @@ public class BatchConfiguration {
   @Autowired
 	public PlatformTransactionManager transactionManager;
 
+  @Autowired
+	private Environment env;
+/*
+	@Value("${pgJdbc}")
+	String pg;*/
+
+	@Bean
+	@Primary
+	public DataSource dataSource() {
+		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
+		dataSourceBuilder.driverClassName("org.postgresql.Driver");
+		dataSourceBuilder.url(env.getProperty("pgJdbc"));
+		//dataSourceBuilder.url(pg);
+		dataSourceBuilder.username(env.getProperty("pgUser"));
+		dataSourceBuilder.password(env.getProperty("pgPass"));
+		return dataSourceBuilder.build();
+	}
+
 	@Bean
 	public ColumnRangePartitioner partitioner()
 	{
@@ -58,25 +88,13 @@ public class BatchConfiguration {
 	}
 
 	@Bean
-	@Primary
-	public DataSource dataSource() {
-		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-		dataSourceBuilder.driverClassName("org.postgresql.Driver");
-		//TODO: convert these to properties to read from an ENV file
-		dataSourceBuilder.url("jdbc:postgresql://postgresql.sbox-dcl.cwds.io:5432/dcl");
-		dataSourceBuilder.username("rthompson");
-		dataSourceBuilder.password("dGDY3RQer8Aj");
-		return dataSourceBuilder.build();
-	}
-
-	@Bean
 	public DataSource legacyDataSource() {
 		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
 		dataSourceBuilder.driverClassName("com.ibm.db2.jcc.DB2Driver");
 	//TODO: convert these to properties to read from an ENV file
-		dataSourceBuilder.url("jdbc:db2://dblb-1.nonprod-gateway.cwds.io:4016/DBN1SOC:currentSchema=CWSNS1;");
-		dataSourceBuilder.username("CWDSRTH");
-		dataSourceBuilder.password("44Pull44");
+		dataSourceBuilder.url(env.getProperty("db2Jdbc"));
+		dataSourceBuilder.username(env.getProperty("db2User"));
+		dataSourceBuilder.password(env.getProperty("db2Pass"));
 		return dataSourceBuilder.build();
 	}
 
@@ -115,8 +133,6 @@ public class BatchConfiguration {
 			.build();
 	}
 
-	//return jobs.get("myJob").start(step1()).next(step2()).build();
-
 	@Bean
 	public Step step1(JdbcBatchItemWriter<LegacyDocument> writer) {
 		return stepBuilderFactory.get("step1")
@@ -154,6 +170,19 @@ public class BatchConfiguration {
 		return reader;
 	}
 
+
+  /*
+    - create rest http client (use properties)
+    - try to make call so dave doc
+    - read response. If good, set Document response to true. If bad, set to false
+    - return document
+  */
+  @Bean
+	@StepScope
+  public DocumentItemProcessor docProcessor() {
+		return new DocumentItemProcessor();
+  }
+
   // Write into a NEW table (new object) in Postgres with just the results of the REST post
 	// First, just write to a table. Then add the RESTful calls
 	@Bean
@@ -178,7 +207,7 @@ public class BatchConfiguration {
 		return stepBuilderFactory.get("step2")
 				.partitioner(slaveStep().getName(), partitioner())
 				.step(slaveStep())
-				.gridSize(4)
+				.gridSize(2)
 				.taskExecutor(new SimpleAsyncTaskExecutor())
 				.build();
 	}
@@ -190,6 +219,7 @@ public class BatchConfiguration {
 		return stepBuilderFactory.get("slaveStep")
 				.<Document, Document>chunk(100)
 				.reader(pagingItemReader(null, null))
+        .processor(docProcessor())
 				.writer(resultItemWriter())
 				.build();
 	}
