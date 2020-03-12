@@ -34,10 +34,13 @@ import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuild
 
 import org.springframework.batch.item.database.support.PostgresPagingQueryProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
@@ -45,6 +48,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 @Configuration
 @EnableBatchProcessing
+//@Import({ DatasourceConfiguration.class})
+@ComponentScan(basePackageClasses = {DatasourceConfiguration.class, MyBatchConfigurer.class})
 public class BatchConfiguration {
 
 	@Autowired
@@ -53,55 +58,32 @@ public class BatchConfiguration {
 	@Autowired
 	public StepBuilderFactory stepBuilderFactory;
 
-	@Autowired
-	public DataSource dataSource;
-
   @Autowired
 	public PlatformTransactionManager transactionManager;
 
   @Autowired
 	private Environment env;
-/*
-	@Value("${pgJdbc}")
-	String pg;*/
 
-	@Bean
-	@Primary
-	public DataSource dataSource() {
-		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-		dataSourceBuilder.driverClassName("org.postgresql.Driver");
-		dataSourceBuilder.url(env.getProperty("pgJdbc"));
-		//dataSourceBuilder.url(pg);
-		dataSourceBuilder.username(env.getProperty("pgUser"));
-		dataSourceBuilder.password(env.getProperty("pgPass"));
-		return dataSourceBuilder.build();
-	}
+  @Autowired
+	public DataSource pgDataSource;
+
+  @Autowired
+	public DataSource legacyDataSource;
 
 	@Bean
 	public ColumnRangePartitioner partitioner()
 	{
 		ColumnRangePartitioner columnRangePartitioner = new ColumnRangePartitioner();
 		columnRangePartitioner.setColumn("doc_id");
-		columnRangePartitioner.setDataSource(dataSource);
+		columnRangePartitioner.setDataSource(pgDataSource);
 		columnRangePartitioner.setTable("legacydocument");
 		return columnRangePartitioner;
 	}
 
 	@Bean
-	public DataSource legacyDataSource() {
-		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-		dataSourceBuilder.driverClassName("com.ibm.db2.jcc.DB2Driver");
-	//TODO: convert these to properties to read from an ENV file
-		dataSourceBuilder.url(env.getProperty("db2Jdbc"));
-		dataSourceBuilder.username(env.getProperty("db2User"));
-		dataSourceBuilder.password(env.getProperty("db2Pass"));
-		return dataSourceBuilder.build();
-	}
-
-	@Bean
 	public JdbcCursorItemReader<LegacyDocument> legacyItemReader() {
 		return new JdbcCursorItemReaderBuilder<LegacyDocument>()
-				.dataSource(legacyDataSource())
+				.dataSource(legacyDataSource)
 				.name("legacyDocumentItemReader")
 				.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT FETCH FIRST 500 ROWS ONLY") //for testing
 				//.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT")
@@ -129,7 +111,7 @@ public class BatchConfiguration {
 		return jobBuilderFactory.get("importUserJob")
 			.incrementer(new RunIdIncrementer())
 			.listener(listener)
-			.start(step1(writer(dataSource))).next(step2())
+			.start(step1(writer(pgDataSource))).next(step2())
 			.build();
 	}
 
@@ -161,7 +143,7 @@ public class BatchConfiguration {
 		queryProvider.setSortKeys(sortKeys);
 
 		JdbcPagingItemReader<Document> reader = new JdbcPagingItemReader<>();
-		reader.setDataSource(this.dataSource);
+		reader.setDataSource(pgDataSource);
 		//TODO: put this in the application.props file via enviroment setting
 		reader.setFetchSize(100);
 		reader.setRowMapper(new DocumentRowMapper());
@@ -190,7 +172,7 @@ public class BatchConfiguration {
 	public JdbcBatchItemWriter<Document> resultItemWriter()
 	{
 		JdbcBatchItemWriter<Document> itemWriter = new JdbcBatchItemWriter<>();
-		itemWriter.setDataSource(dataSource);
+		itemWriter.setDataSource(pgDataSource);
 		itemWriter.setSql("INSERT INTO result (res, note) VALUES (1 , :docLocator)");
 
 		itemWriter.setItemSqlParameterSourceProvider
