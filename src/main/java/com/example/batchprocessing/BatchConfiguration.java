@@ -162,7 +162,7 @@ public class BatchConfiguration {
 	{
 		JdbcBatchItemWriter<Document> itemWriter = new JdbcBatchItemWriter<>();
 		itemWriter.setDataSource(dataSource);
-		itemWriter.setSql("INSERT INTO result (res, note) VALUES (1 , :docLocator)");
+		itemWriter.setSql("INSERT INTO result (newdoc, note) VALUES (1 , :docLocator)");
 
 		itemWriter.setItemSqlParameterSourceProvider
 				(new BeanPropertyItemSqlParameterSourceProvider<>());
