@@ -31,7 +31,7 @@ public class DocumentItemProcessor implements ItemProcessor<Document, Document> 
 		HttpPost httpPost = new HttpPost(env.getProperty("doc.url"));
 
 		List<NameValuePair> params = new ArrayList<NameValuePair>();
-		params.add(new BasicNameValuePair("file", doc.getDocLocator()));
+		params.add(new BasicNameValuePair("locator", doc.getDocLocator()));
 		httpPost.setEntity(new UrlEncodedFormEntity(params));
 		try {
 			CloseableHttpResponse response = client.execute(httpPost);

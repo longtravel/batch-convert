@@ -48,7 +48,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 @Configuration
 @EnableBatchProcessing
-//@Import({ DatasourceConfiguration.class})
 @ComponentScan(basePackageClasses = {DatasourceConfiguration.class, MyBatchConfigurer.class})
 public class BatchConfiguration {
 
@@ -62,7 +61,8 @@ public class BatchConfiguration {
 	public PlatformTransactionManager transactionManager;
 
   @Autowired
-	private Environment env;
+	private static Environment env;
+
 
   @Autowired
 	public DataSource pgDataSource;
@@ -80,8 +80,12 @@ public class BatchConfiguration {
 		return columnRangePartitioner;
 	}
 
+
+	/*public ItemReader itemReader(@Qualifier("sourceDb") final DataSource dataSource) {
+		JdbcCursorItemReader<SourceTable> reader = new JdbcCursorItemReader<>();*/
+
 	@Bean
-	public JdbcCursorItemReader<LegacyDocument> legacyItemReader() {
+	public JdbcCursorItemReader<LegacyDocument> legacyItemReader(@Qualifier("legacyDataSource") final DataSource legacyDataSource) {
 		return new JdbcCursorItemReaderBuilder<LegacyDocument>()
 				.dataSource(legacyDataSource)
 				.name("legacyDocumentItemReader")
@@ -98,7 +102,7 @@ public class BatchConfiguration {
 	}
 
 	@Bean
-	public JdbcBatchItemWriter<LegacyDocument> writer(DataSource dataSource) {
+	public JdbcBatchItemWriter<LegacyDocument> writer(@Qualifier("pgDataSource") final DataSource dataSource) {
 		return new JdbcBatchItemWriterBuilder<LegacyDocument>()
 			.itemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<>())
 			.sql("INSERT INTO legacyDocument (docLocator) VALUES (:docLocator)")
@@ -119,7 +123,7 @@ public class BatchConfiguration {
 	public Step step1(JdbcBatchItemWriter<LegacyDocument> writer) {
 		return stepBuilderFactory.get("step1")
 			.<LegacyDocument, LegacyDocument> chunk(10)
-			.reader(legacyItemReader())
+			.reader(legacyItemReader(legacyDataSource))
 			.processor(processor())
 			.writer(writer)
 			.build();
@@ -173,7 +177,7 @@ public class BatchConfiguration {
 	{
 		JdbcBatchItemWriter<Document> itemWriter = new JdbcBatchItemWriter<>();
 		itemWriter.setDataSource(pgDataSource);
-		itemWriter.setSql("INSERT INTO result (res, note) VALUES (1 , :docLocator)");
+		itemWriter.setSql("INSERT INTO result (newdoc, note) VALUES (:newdoc , :docLocator)");
 
 		itemWriter.setItemSqlParameterSourceProvider
 				(new BeanPropertyItemSqlParameterSourceProvider<>());
