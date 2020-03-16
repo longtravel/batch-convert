@@ -36,6 +36,9 @@ dependencies {
 	compile group: 'org.postgresql', name: 'postgresql', version: '42.1.4'
 	// https://mvnrepository.com/artifact/org.apache.httpcomponents/httpclient
 	compile group: 'org.apache.httpcomponents', name: 'httpclient', version: '4.5'
+	// https://mvnrepository.com/artifact/commons-codec/commons-codec
+	compile group: 'commons-codec', name: 'commons-codec', version: '1.14'
+
 
 }
 

@@ -17,8 +17,8 @@ public class Document {
 		return docLocator;
 	}
 
-	public void setNewDoc(int newdoc) {this.newdoc = newdoc;}
-	public int getNewDoc() { return newdoc;}
+	public void setNewdoc(int newdoc) {this.newdoc = newdoc;}
+	public int getNewdoc() { return newdoc;}
 
 	@Override
 	public String toString() {
