@@ -1,10 +1,22 @@
 package com.example.batchprocessing;
 
+import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import javax.sql.DataSource;
 
+import org.apache.http.NameValuePair;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.message.BasicNameValuePair;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
@@ -22,17 +34,21 @@ import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuild
 
 import org.springframework.batch.item.database.support.PostgresPagingQueryProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 
-
 @Configuration
 @EnableBatchProcessing
+@ComponentScan(basePackageClasses = {DatasourceConfiguration.class, MyBatchConfigurer.class})
 public class BatchConfiguration {
 
 	@Autowired
@@ -41,49 +57,37 @@ public class BatchConfiguration {
 	@Autowired
 	public StepBuilderFactory stepBuilderFactory;
 
-	@Autowired
-	public DataSource dataSource;
-
   @Autowired
 	public PlatformTransactionManager transactionManager;
+
+  @Autowired
+	private static Environment env;
+
+
+  @Autowired
+	public DataSource pgDataSource;
+
+  @Autowired
+	public DataSource legacyDataSource;
 
 	@Bean
 	public ColumnRangePartitioner partitioner()
 	{
 		ColumnRangePartitioner columnRangePartitioner = new ColumnRangePartitioner();
 		columnRangePartitioner.setColumn("doc_id");
-		columnRangePartitioner.setDataSource(dataSource);
+		columnRangePartitioner.setDataSource(pgDataSource);
 		columnRangePartitioner.setTable("legacydocument");
 		return columnRangePartitioner;
 	}
 
-	@Bean
-	@Primary
-	public DataSource dataSource() {
-		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-		dataSourceBuilder.driverClassName("org.postgresql.Driver");
-		//TODO: convert these to properties to read from an ENV file
-		dataSourceBuilder.url("jdbc:postgresql://postgresql.sbox-dcl.cwds.io:5432/dcl");
-		dataSourceBuilder.username("rthompson");
-		dataSourceBuilder.password("dGDY3RQer8Aj");
-		return dataSourceBuilder.build();
-	}
+
+	/*public ItemReader itemReader(@Qualifier("sourceDb") final DataSource dataSource) {
+		JdbcCursorItemReader<SourceTable> reader = new JdbcCursorItemReader<>();*/
 
 	@Bean
-	public DataSource legacyDataSource() {
-		DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-		dataSourceBuilder.driverClassName("com.ibm.db2.jcc.DB2Driver");
-	//TODO: convert these to properties to read from an ENV file
-		dataSourceBuilder.url("jdbc:db2://dblb-1.nonprod-gateway.cwds.io:4016/DBN1SOC:currentSchema=CWSNS1;");
-		dataSourceBuilder.username("CWDSRTH");
-		dataSourceBuilder.password("44Pull44");
-		return dataSourceBuilder.build();
-	}
-
-	@Bean
-	public JdbcCursorItemReader<LegacyDocument> legacyItemReader() {
+	public JdbcCursorItemReader<LegacyDocument> legacyItemReader(@Qualifier("legacyDataSource") final DataSource legacyDataSource) {
 		return new JdbcCursorItemReaderBuilder<LegacyDocument>()
-				.dataSource(legacyDataSource())
+				.dataSource(legacyDataSource)
 				.name("legacyDocumentItemReader")
 				.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT FETCH FIRST 500 ROWS ONLY") //for testing
 				//.sql("select DOC_HANDLE from CWSNS1.TSCNTRLT")
@@ -98,7 +102,7 @@ public class BatchConfiguration {
 	}
 
 	@Bean
-	public JdbcBatchItemWriter<LegacyDocument> writer(DataSource dataSource) {
+	public JdbcBatchItemWriter<LegacyDocument> writer(@Qualifier("pgDataSource") final DataSource dataSource) {
 		return new JdbcBatchItemWriterBuilder<LegacyDocument>()
 			.itemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<>())
 			.sql("INSERT INTO legacyDocument (docLocator) VALUES (:docLocator)")
@@ -111,17 +115,15 @@ public class BatchConfiguration {
 		return jobBuilderFactory.get("importUserJob")
 			.incrementer(new RunIdIncrementer())
 			.listener(listener)
-			.start(step1(writer(dataSource))).next(step2())
+			.start(step1(writer(pgDataSource))).next(step2())
 			.build();
 	}
-
-	//return jobs.get("myJob").start(step1()).next(step2()).build();
 
 	@Bean
 	public Step step1(JdbcBatchItemWriter<LegacyDocument> writer) {
 		return stepBuilderFactory.get("step1")
 			.<LegacyDocument, LegacyDocument> chunk(10)
-			.reader(legacyItemReader())
+			.reader(legacyItemReader(legacyDataSource))
 			.processor(processor())
 			.writer(writer)
 			.build();
@@ -145,7 +147,7 @@ public class BatchConfiguration {
 		queryProvider.setSortKeys(sortKeys);
 
 		JdbcPagingItemReader<Document> reader = new JdbcPagingItemReader<>();
-		reader.setDataSource(this.dataSource);
+		reader.setDataSource(pgDataSource);
 		//TODO: put this in the application.props file via enviroment setting
 		reader.setFetchSize(100);
 		reader.setRowMapper(new DocumentRowMapper());
@@ -154,6 +156,19 @@ public class BatchConfiguration {
 		return reader;
 	}
 
+
+  /*
+    - create rest http client (use properties)
+    - try to make call so dave doc
+    - read response. If good, set Document response to true. If bad, set to false
+    - return document
+  */
+  @Bean
+	@StepScope
+  public DocumentItemProcessor docProcessor() {
+		return new DocumentItemProcessor();
+  }
+
   // Write into a NEW table (new object) in Postgres with just the results of the REST post
 	// First, just write to a table. Then add the RESTful calls
 	@Bean
@@ -161,8 +176,8 @@ public class BatchConfiguration {
 	public JdbcBatchItemWriter<Document> resultItemWriter()
 	{
 		JdbcBatchItemWriter<Document> itemWriter = new JdbcBatchItemWriter<>();
-		itemWriter.setDataSource(dataSource);
-		itemWriter.setSql("INSERT INTO result (newdoc, note) VALUES (1 , :docLocator)");
+		itemWriter.setDataSource(pgDataSource);
+		itemWriter.setSql("INSERT INTO result (newdoc, note) VALUES (:newdoc , :docLocator)");
 
 		itemWriter.setItemSqlParameterSourceProvider
 				(new BeanPropertyItemSqlParameterSourceProvider<>());
@@ -178,7 +193,7 @@ public class BatchConfiguration {
 		return stepBuilderFactory.get("step2")
 				.partitioner(slaveStep().getName(), partitioner())
 				.step(slaveStep())
-				.gridSize(4)
+				.gridSize(2)
 				.taskExecutor(new SimpleAsyncTaskExecutor())
 				.build();
 	}
@@ -190,6 +205,7 @@ public class BatchConfiguration {
 		return stepBuilderFactory.get("slaveStep")
 				.<Document, Document>chunk(100)
 				.reader(pagingItemReader(null, null))
+        .processor(docProcessor())
 				.writer(resultItemWriter())
 				.build();
 	}

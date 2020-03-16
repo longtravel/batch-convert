@@ -10,8 +10,8 @@ public class DocumentRowMapper implements RowMapper<Document> {
 
   public Document mapRow(ResultSet rs, int rowNum) throws SQLException {
     Document document = new Document();
-
     document.setDocLocator(rs.getString(DOC_LOCATOR_COLUMN));
+    document.setNewdoc(0);
 
     return document;
   }
